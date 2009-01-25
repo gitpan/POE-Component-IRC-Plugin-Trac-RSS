@@ -55,8 +55,13 @@
   sub irc_tracrss_items {
     my ($kernel,$sender,$args) = @_[KERNEL,SENDER,ARG0];
     my $channel = delete $args->{_channel};
-    $kernel->post( $sender, 'privmsg', $channel, join(' ', @_[ARG1..$#_] ) );
+    #foreach(@_[ARG1..$#_]) {
+    foreach(@_[ARG1..ARG4]) {
+    print '$_\n';
+    $kernel->post( $sender, 'privmsg', $channel,  $_ );
+    }
     undef;
+  
   }
 
 

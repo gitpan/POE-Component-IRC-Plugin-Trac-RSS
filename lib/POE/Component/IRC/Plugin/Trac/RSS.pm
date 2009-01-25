@@ -9,115 +9,126 @@ use XML::RSS;
 use HTTP::Request;
 use vars qw($VERSION);
 
-$VERSION = '0.1';
+$VERSION = '0.11';
 
 sub new {
 	my $package = shift;
 	my %args = @_;
+	
 	$args{lc $_} = delete $args{$_} for keys %args;
 	return bless \%args, $package;
 }
 
 sub PCI_register {
-  my ($self,$irc) = @_;
-  $self->{irc} = $irc;
-  $irc->plugin_register( $self, 'SERVER', qw(spoof) );
-  unless ( $self->{http_alias} ) {
-	$self->{http_alias} = join('-', 'ua-trac-rss', $irc->session_id() );
-	$self->{follow_redirects} ||= 2;
-	POE::Component::Client::HTTP->spawn(
-	   Alias           => $self->{http_alias},
-	   Timeout         => 30,
-	   FollowRedirects => $self->{follow_redirects},
-	);
-  }
-  $self->{session_id} = POE::Session->create(
-	object_states => [ 
-	   $self => [ qw(_shutdown _start _get_tracrss _response) ],
-	],
-  )->ID();
-  $poe_kernel->state( 'get_tracrss', $self );
-  return 1;
+	my ($self,$irc) = @_;
+	
+	$self->{irc} = $irc;
+	$irc->plugin_register( $self, 'SERVER', qw(spoof) );
+	
+	unless ( $self->{http_alias} ) {
+		$self->{http_alias} = join('-', 'ua-trac-rss', 
+			$irc->session_id() );
+		$self->{follow_redirects} ||= 2;
+		POE::Component::Client::HTTP->spawn(
+	   	Alias           => $self->{http_alias},
+	   	Timeout         => 30,
+	   	FollowRedirects => $self->{follow_redirects},
+		);
+  	}
+  
+	$self->{session_id} = POE::Session->create(
+		object_states => [ 
+		$self => [ qw(_shutdown _start _get_tracrss _response) ],
+		],
+  	)->ID();
+	$poe_kernel->state( 'get_tracrss', $self );
+	return 1;
 }
 
 sub PCI_unregister {
-  my ($self,$irc) = splice @_, 0, 2;
-  $poe_kernel->state( 'get_tracrss' );
-  $poe_kernel->call( $self->{session_id} => '_shutdown' );
-  delete $self->{irc};
-  return 1;
+	my ($self,$irc) = splice @_, 0, 2;
+	
+	$poe_kernel->state( 'get_tracrss' );
+	$poe_kernel->call( $self->{session_id} => '_shutdown' );
+	delete $self->{irc};
+	return 1;
 }
 
 sub _start {
-  my ($kernel,$self) = @_[KERNEL,OBJECT];
-  $self->{session_id} = $_[SESSION]->ID();
-  $kernel->refcount_increment( $self->{session_id}, __PACKAGE__ );
-  undef;
+	my ($kernel,$self) = @_[KERNEL,OBJECT];
+	
+	$self->{session_id} = $_[SESSION]->ID();
+	$kernel->refcount_increment( $self->{session_id}, __PACKAGE__ );
+	undef;
 }
 
 sub _shutdown {
-  my ($kernel,$self) = @_[KERNEL,OBJECT];
-  $kernel->alarm_remove_all();
-  $kernel->refcount_decrement( $self->{session_id}, __PACKAGE__ );
-  $kernel->call( $self->{http_alias} => 'shutdown' );
-  undef;
+	my ($kernel,$self) = @_[KERNEL,OBJECT];
+  
+	$kernel->alarm_remove_all();
+	$kernel->refcount_decrement( $self->{session_id}, __PACKAGE__ );
+	$kernel->call( $self->{http_alias} => 'shutdown' );
+	undef;
 }
 
 sub get_tracrss {
-  my ($kernel,$self,$session) = @_[KERNEL,OBJECT,SESSION];
-  $kernel->post( $self->{session_id}, '_get_tracrss', @_[ARG0..$#_] );
-  undef;
+	my ($kernel,$self,$session) = @_[KERNEL,OBJECT,SESSION];
+	$kernel->post( $self->{session_id}, '_get_tracrss', @_[ARG0..$#_] );
+	undef;
 }
 
 sub _get_tracrss {
-  my ($kernel,$self) = @_[KERNEL,OBJECT];
-  my %args;
-  if ( ref $_[ARG0] eq 'HASH' ) {
-     %args = %{ $_[ARG0] };
-  } else {
-     %args = @_[ARG0..$#_];
-  }
-  $args{lc $_} = delete $args{$_} for grep { !/^_/ } keys %args;
-  return unless $args{url};
-  $args{irc_session} = $self->{irc}->session_id();
+	my ($kernel,$self) = @_[KERNEL,OBJECT];
+	my %args;
   
-  my $req = HTTP::Request->new( GET => $args{url});
-  $req->authorization_basic($args{username}, $args{password});
+	if ( ref $_[ARG0] eq 'HASH' ) {
+		%args = %{ $_[ARG0] };
+	} else {
+		%args = @_[ARG0..$#_];
+	}
+  
+	$args{lc $_} = delete $args{$_} for grep { !/^_/ } keys %args;
+	return unless $args{url};
+	$args{irc_session} = $self->{irc}->session_id();
+  
+	my $req = HTTP::Request->new( GET => $args{url});
+	$req->authorization_basic($args{username}, $args{password});
 
-  print "debug1: \n";
-  print "username: " . $args{username} . "\n";
-  print "password: " . $args{password} . "\n";
-#  $kernel->post( $self->{http_alias}, 'request', '_response', HTTP::Request->new( GET => $args{url} ), \%args );
+	$kernel->post( $self->{http_alias}, 'request', '_response', $req, 
+		\%args );
 
-
-  $kernel->post( $self->{http_alias}, 'request', '_response', $req, \%args );
-
-  undef;
+	undef;
 }
 
 sub _response {
-  my ($kernel,$self,$request,$response) = @_[KERNEL,OBJECT,ARG0,ARG1];
-  my $args = $request->[1];
-  my @params;
-  push @params, delete $args->{irc_session}, '__send_event';
-  my $result = $response->[0];
-  print "debug2: \n";
-  print $result->content . "\n";
-  if ( $result->is_success ) {
-      my $str = $result->content;
-      my $rss = XML::RSS->new();
-      eval { $rss->parse($str); };
-      if ($@) {
-	push @params, 'irc_tracrss_error', $args, $@;
-      } else {
-	push @params, 'irc_tracrss_items', $args;
-	push @params, $_->{'title'} for @{ $rss->{'description'} };
-      }
-  } else {
-	push @params, 'irc_tracrss_error', $args, $result->status_line;
-  }
-  $kernel->post( @params );
-  undef;
+	my ($kernel,$self,$request,$response) = @_[KERNEL,OBJECT,ARG0,ARG1];
+	my $args = $request->[1];
+	my @params;
+
+	push @params, delete $args->{irc_session}, '__send_event';
+	my $result = $response->[0];
+
+	if ( $result->is_success ) {
+		my $str = $result->content;
+		my $rss = XML::RSS->new();
+		eval { $rss->parse($str); };
+		if ($@) {
+			push @params, 'irc_tracrss_error', $args, $@;
+		} else {
+			push @params, 'irc_tracrss_items', $args;
+			
+			foreach (@{ $rss->{'items'} }) {
+				my $say = $_->{'title'} . ": ";
+				$say .= $_->{'link'};
+				push @params, $say;
+			}
+	}
+
+  
+	} else {
+		push @params, 'irc_tracrss_error', $args, $result->status_line;
+	}
+	$kernel->post( @params );
 }
 
 1;
